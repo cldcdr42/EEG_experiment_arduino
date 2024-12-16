@@ -8,3 +8,5 @@ HX711.h [Link](https://github.com/sparkfun/SparkFun_TB6612FNG_Arduino_Library)
 
 For DC motor:  
 SparkFun_TB6612.h [Link](https://github.com/bogde/HX711)
+
+calibration weight: phone without case (162-170 g)
