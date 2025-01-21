@@ -173,32 +173,19 @@ int read_write_serial() {
 
     char buffer[32]; // Buffer to hold input
     int number;
-
-    
-    bool use_DC_motor = false;
-    if (!use_DC_motor) {
-        
-    }
-    auto start = Kernel::Clock::now();
-
-    // Start threads for data collection
-    accelerometer_thread.start(callback(accelerometer_read_data, &start));
-    weight_sensor_thread.start(callback(weight_sensor_read_data, &start));
+    int angle = 0;
+    Motor motor(D3, D4);
 
     while (true) {
 
         read_line(buffer, sizeof(buffer));
-        //int num = atoi(buffer);
-        //pc.write("I READ YOUR NUMBER %d", num);
+
 
         // Attempt to parse the integer
         if (sscanf(buffer, "%d", &number) == 1) {
-            // Trigger action based on received integer
-            if (number == 0) {
-                pc.write("Received 0. Turning LED off.\n", 30);
-            } else {
-                pc.write("Received non-zero integer. Toggling LED.\n", 41);
-            }
+            drive(motor, 36,7*abs(number));
+            angle = number;
+            printf("The angle is %d", number);
         } else {
             pc.write("Invalid input. Please enter a valid integer.\n", 44);
         }
