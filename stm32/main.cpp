@@ -2,7 +2,25 @@
 
 #include "ADXL345.h"
 #include "Hx711.h"
-//#include "Dht11.h"
+#include "Sparkfun_TB6612.h"
+#include <cstddef>
+
+#include "Dht11.h"
+
+/*
+
+DC-Motor driver:
+Sparkfun_TB6612  library: http://os.mbed.com/users/ateyercheese/code/Sparkfun_TB6612/
+
+Accelerometer:
+ADXL45 library: http://os.mbed.com/users/aberk/code/ADXL345/
+
+Weight Scale ADC:
+HX711 library: http://os.mbed.com/users/megrootens/code/HX711/
+
+Temperature and Humidity sensor:
+DHT11 library (modified): https://os.mbed.com/users/fossum_13/code/DHT11/
+*/
 
 /* 
 THREAD 1: RECEIVE DATA FROM WEIGHT SCALE
@@ -50,6 +68,13 @@ MCU (STM32F401RE)        ACCELEROMETER (ADXL345)
 // Weight Scale sample collection frequency
 #define HX_SLEEP_TIME 100ms
 
+// Main thread sleep time in milliseconds
+#define MAIN_SLEEP_TIME 100ms
+
+// Temperature
+#define DHT_SDI PA_0
+#define DHT_SLEEP_RATE 100ms
+
 
 ADXL345 accelerometer(ACC_MOSI, ACC_MISO, ACC_SCL, ACC_CS);
 Thread accelerometer_thread;
@@ -70,7 +95,7 @@ void accelerometer_read_data(Kernel::Clock::time_point *mcu_start_time)
     while(true)
     {     
         accelerometer.getOutput(acc_values);
-        printf("tXYZ;%d;%i;%i;%i\n", int((Kernel::Clock::now() - *mcu_start_time).count()), (int16_t)acc_values[0], (int16_t)acc_values[1], (int16_t)acc_values[2]);
+        printf("X;%d;%i;%i;%i\n", int((Kernel::Clock::now() - *mcu_start_time).count()), (int16_t)acc_values[0], (int16_t)acc_values[1], (int16_t)acc_values[2]);
         ThisThread::sleep_for(ACC_SLEEP_TIME);
     }
 }
@@ -103,46 +128,103 @@ void weight_sensor_read_data(Kernel::Clock::time_point *mcu_start_time)
     // Start reading values constantly and sending them to uart
     while(true)
     {     
-        printf("tW;%d;%f\n", int((Kernel::Clock::now() - *mcu_start_time).count()), weight_sensor.read());
+        printf("W;%d;%f\n", int((Kernel::Clock::now() - *mcu_start_time).count()), weight_sensor.read());
         ThisThread::sleep_for(HX_SLEEP_TIME);
     }
 }
 
-// Blinking rate in milliseconds
-#define BLINKING_RATE 200ms
+// ==== tr
 
-// A5 analog pin on board
-AnalogIn Ain(PC_0);
-//DigitalOut led(LED1);
+Dht11 sensor(DHT_SDI);
+Thread temperature_thread;
 
-int main()
-{
-    auto start = Kernel::Clock::now();
-
-    accelerometer_thread.start(callback(accelerometer_read_data, &start));
-    weight_sensor_thread.start(callback(weight_sensor_read_data, &start));
-
-    while (true)
-    {
-        printf("tMain;%d;%f\n", int((Kernel::Clock::now() - start).count()), Ain.read());
-        ThisThread::sleep_for(BLINKING_RATE);
-    }
-}
-
-/*
-Dht11 sensor(PA_0);
-Thread thread1;
-
-void accelerometer_thread()
+void temperature_read(Kernel::Clock::time_point *mcu_start_time)
 {
     while(true)
     {
-        //led = !led;
-        //ThisThread::sleep_for(SLEEP_RATE);
         sensor.read();
         printf("T: %d, H: %d\n:", sensor.getCelsius(), sensor.getHumidity());
-        ThisThread::sleep_for(SLEEP_RATE);
+        ThisThread::sleep_for(DHT_SLEEP_RATE);
 
     }
 }
-*/
+
+#define MAXIMUM_BUFFER_SIZE                                                  32
+UnbufferedSerial pc(USBTX, USBRX, 9600); // tx, rx, baud rate
+
+void read_line(char *buffer, size_t length)
+{
+        int index = 0;
+        char c;
+
+        // Read characters until '\n' is received
+        while (pc.read(&c, 1)) {
+            if (c == '\n') {
+                buffer[index] = '\0'; // Null-terminate the string
+                break;
+            } else if (index < sizeof(buffer) - 1) {
+                buffer[index++] = c; // Add character to buffer
+            }
+        }
+}
+
+int read_write_serial() {
+    pc.write("Waiting for an integer input...\n", 33);
+
+    char buffer[32]; // Buffer to hold input
+    int number;
+
+    
+    bool use_DC_motor = false;
+    if (!use_DC_motor) {
+        
+    }
+    auto start = Kernel::Clock::now();
+
+    // Start threads for data collection
+    accelerometer_thread.start(callback(accelerometer_read_data, &start));
+    weight_sensor_thread.start(callback(weight_sensor_read_data, &start));
+
+    while (true) {
+
+        read_line(buffer, sizeof(buffer));
+        //int num = atoi(buffer);
+        //pc.write("I READ YOUR NUMBER %d", num);
+
+        // Attempt to parse the integer
+        if (sscanf(buffer, "%d", &number) == 1) {
+            // Trigger action based on received integer
+            if (number == 0) {
+                pc.write("Received 0. Turning LED off.\n", 30);
+            } else {
+                pc.write("Received non-zero integer. Toggling LED.\n", 41);
+            }
+        } else {
+            pc.write("Invalid input. Please enter a valid integer.\n", 44);
+        }
+    }
+}
+
+AnalogIn Ain(PA_2);
+// ==== tr
+
+
+int main() {
+    auto start = Kernel::Clock::now();
+
+    // Start threads for data collection
+    accelerometer_thread.start(callback(accelerometer_read_data, &start));
+    weight_sensor_thread.start(callback(weight_sensor_read_data, &start));
+
+    // === tr
+    temperature_thread.start(callback(temperature_read, &start));
+    // === tr
+
+    while (true) {
+
+        // === tr
+        printf("A;%d;%f\n", int((Kernel::Clock::now() - start).count()), Ain.read());
+        ThisThread::sleep_for(MAIN_SLEEP_TIME);
+        // === tr
+    }
+}
