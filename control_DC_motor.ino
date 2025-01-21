@@ -1,108 +1,240 @@
-#include <SparkFun_TB6612.h>
+#include "mbed.h"
+
+#include "ADXL345.h"
+#include "Hx711.h"
+#include "Sparkfun_TB6612.h"
+#include <cstddef>
+//#include "Dht11.h"
+
+/*
+
+DC-Motor driver:
+Sparkfun_TB6612  library: http://os.mbed.com/users/ateyercheese/code/Sparkfun_TB6612/
+
+Accelerometer:
+ADXL45 library: http://os.mbed.com/users/aberk/code/ADXL345/
+
+Weight Scale ADC:
+HX711 library: http://os.mbed.com/users/megrootens/code/HX711/
+
+Temperature and Humidity sensor:
+DHT11 library (modified): https://os.mbed.com/users/fossum_13/code/DHT11/
+*/
+
+/* 
+THREAD 1: RECEIVE DATA FROM WEIGHT SCALE
+    - constantly read values from the weight scale (using I2C)
+    - send them to uart
+
+THREAD 2: RECEIVE DATA FROM ACCELEROMETER
+    - constantly read values from the sensor (using SPI)
+    - send them to uart
+
+MAIN THREAD: CONTROL DC-MOTOR
+    - wait for data from uart
+    - check if data has correct format
+    - rotate DC motor for specified angle
+    - send to uart new angle (current orhesis position)
+*/
 
 
-// === Pinout for TB6612 driver used to control DC motor === //
-#define AIN1 8 
-#define AIN2 7
-#define PWMA 5
-#define STBY 2
+/*
+Accelerometer connection to MCU (PINOUT)
 
-// === Initialize data for DC motor === //
-const int offsetA = 1;
-Motor motor1 = Motor(AIN1, AIN2, PWMA, offsetA, STBY);
+MCU (STM32F401RE)        ACCELEROMETER (ADXL345)
+    D13 (SCK)       ===     SCL
+    D12 (MISO)      ===     SDO
+    D11 (MOSI)      ===     SDA
+    D10 (CS)        ===     CS
 
-// === Initialize data to recieve angle rotation values from Serial Port === //
-const byte numChars = 32;
-char receivedChars[numChars];   // an array to store the received data
+    3.3V            ===     VCC
+    GND             ===     GND
+*/
 
-int rotationAngle = 500;  // variable used for angle rotation value recieved and parced from Serial port
-// rotationAngle == 500 // Initial value during start of the program
-// rotationAngle == 501 // Error during string parsing from serial
-// rotationAngle + currentAngle <= 120 && rotationAngle + currentAngle >= 0 // acceptable turning angle
+// Accelerometer input pins on the MCU
+#define ACC_MOSI D11
+#define ACC_MISO D12
+#define ACC_SCL D13
+#define ACC_CS D10
 
-int currentAngle = 60; //  variable stores current angular position of DC motor. Starts from 60, changes between 0 and 120
-int newAngleDif;
+// Accelerometer sample collection frequency
+#define ACC_SLEEP_TIME 33ms
 
-boolean newData = false; 
+// Weigh scale input pins on the MCU
+#define HX_SCL D15
+#define HX_SDA D14
 
-void setup() {
-    Serial.begin(9600);
-    Serial.println("<MCU is ready. Orth v. 0.3>");
-    //calibrateDCMotor();
-    currentAngle = 60;
-}
+// Weight Scale sample collection frequency
+#define HX_SLEEP_TIME 100ms
 
-void loop() {
-    getAngleFromSerial();
-    parseAngleFromSerial();
+// Main thread sleep time in milliseconds
+#define MAIN_SLEEP_TIME 100ms
 
-    if (newData) {
-      newAngleDif = rotationAngle - currentAngle;
-      currentAngle = rotationAngle;
 
-      rotateMotor(newAngleDif);
-      sendAngleToSerial();
-      newData = false;
-    }
-}
+ADXL345 accelerometer(ACC_MOSI, ACC_MISO, ACC_SCL, ACC_CS);
+Thread accelerometer_thread;
 
-void getAngleFromSerial() {
-  static byte ndx = 0;
-  char endMarker = '\n';
-  char rc;
-  
-  if (Serial.available() > 0) {
-    rc = Serial.read();
+// Function for accelerometer thread
+void accelerometer_read_data(Kernel::Clock::time_point *mcu_start_time)
+{
+    // Initiate accelerometer parameters
+    accelerometer.setPowerControl(0x00);
+    accelerometer.setDataFormatControl(0x0B);
+    accelerometer.setDataRate(ADXL345_3200HZ);
+    accelerometer.setPowerControl(0x08);
     
-    if (rc != endMarker) {
-      receivedChars[ndx] = rc;
-      ndx++;
-      if (ndx >= numChars) {
-        ndx = numChars - 1;
-      }
-    } else {
-      receivedChars[ndx] = '\0'; // terminate the string
-      ndx = 0;
-      newData = true;
+    // printf("Activitytreshold: %d",accelerometer.getActivityThreshold());
+
+    // Start reading values constantly and sending them to uart
+    int acc_values[3] = {0,0,0};
+    while(true)
+    {     
+        accelerometer.getOutput(acc_values);
+        printf("X;%d;%i;%i;%i\n", int((Kernel::Clock::now() - *mcu_start_time).count()), (int16_t)acc_values[0], (int16_t)acc_values[1], (int16_t)acc_values[2]);
+        ThisThread::sleep_for(ACC_SLEEP_TIME);
     }
-  }
 }
 
-void parseAngleFromSerial() {
-    rotationAngle = 500;
-    rotationAngle = atoi(receivedChars);
 
-    //int newAngle = currentAngle + rotationAngle;
-    //if (!(newAngle <= 120 && newAngle >= 0)) {
-    //  rotationAngle = 501;
-    //  newData = false;
-    //}
+/*
+ADC (fow weigh scales) connection to MCU (PINOUT)
+
+MCU (STM32F401RE)        ADC (XFW-HX711)
+    D14 (SDA)       ===     DT
+    D15 (SCL)       ===     SCK
+    
+    3.3V            ===     VCC
+    GND             ===     GND
+*/
+
+
+// Function for weight scales thread
+Hx711 weight_sensor(HX_SCL, HX_SDA);
+Thread weight_sensor_thread;
+
+void weight_sensor_read_data(Kernel::Clock::time_point *mcu_start_time)
+{
+    // Initiate accelerometer parameters
+    while(!weight_sensor.is_ready())
+    {
+        continue;
+    }
+
+    // Start reading values constantly and sending them to uart
+    while(true)
+    {     
+        printf("W;%d;%f\n", int((Kernel::Clock::now() - *mcu_start_time).count()), weight_sensor.read());
+        ThisThread::sleep_for(HX_SLEEP_TIME);
+    }
 }
 
-void rotateMotor(int rotationAngle) {
-  // Use of the drive function which takes as parameters speed
-  // and optional duration.  A negative speed will cause it to go
-  // backwards.  Speed can be from -255 to 255.  Also use of the 
-  // brake function which takes no arguements.
-  int speed = 255;
 
-  // to rotate backwards (negative angle) make speed value negative
-  if (rotationAngle < 0) {
-    speed *= -1;
-  }
+int main() {
+    auto start = Kernel::Clock::now();
 
-  // 36.7 - coefficient. Per 36,7 ms motor turns for 1 degree.
-  motor1.drive(speed, 36.7*abs(rotationAngle));
-  motor1.brake();
+    // Start threads for data collection
+    accelerometer_thread.start(callback(accelerometer_read_data, &start));
+    weight_sensor_thread.start(callback(weight_sensor_read_data, &start));
 
-  //currentAngle += rotationAngle;
+    while (true) {
+        ThisThread::sleep_for(chrono::milliseconds(1000));
+    }
 }
 
-void sendAngleToSerial() {
-  Serial.println(currentAngle);
+/*
+#define MAXIMUM_BUFFER_SIZE                                                  32
+UnbufferedSerial pc(USBTX, USBRX, 9600); // tx, rx, baud rate
+DigitalOut led(LED1); // LED control
+
+void read_line(char *buffer, size_t length)
+{
+        int index = 0;
+        char c;
+
+        // Read characters until '\n' is received
+        while (pc.read(&c, 1)) {
+            if (c == '\n') {
+                buffer[index] = '\0'; // Null-terminate the string
+                break;
+            } else if (index < sizeof(buffer) - 1) {
+                buffer[index++] = c; // Add character to buffer
+            }
+        }
 }
 
-void calibrateDCMotor() {
-  rotateMotor(-140);
-  rotateMotor(60);
+int main() {
+    pc.write("Waiting for an integer input...\n", 33);
+
+    char buffer[32]; // Buffer to hold input
+    int number;
+
+    
+    bool use_DC_motor = false;
+    if (!use_DC_motor) {
+        
+    }
+    auto start = Kernel::Clock::now();
+
+    // Start threads for data collection
+    accelerometer_thread.start(callback(accelerometer_read_data, &start));
+    weight_sensor_thread.start(callback(weight_sensor_read_data, &start));
+
+    while (true) {
+
+        read_line(buffer, sizeof(buffer));
+        //int num = atoi(buffer);
+        //pc.write("I READ YOUR NUMBER %d", num);
+
+        // Attempt to parse the integer
+        if (sscanf(buffer, "%d", &number) == 1) {
+            // Trigger action based on received integer
+            if (number == 0) {
+                pc.write("Received 0. Turning LED off.\n", 30);
+                led = 0; // Turn off LED
+            } else {
+                pc.write("Received non-zero integer. Toggling LED.\n", 41);
+                led = !led; // Toggle LED state
+            }
+        } else {
+            pc.write("Invalid input. Please enter a valid integer.\n", 44);
+        }
+    }
 }
+*/
+
+/*
+int main()
+{
+    // Create starting point in time
+    auto start = Kernel::Clock::now();
+
+    // Start threads for data collection
+    accelerometer_thread.start(callback(accelerometer_read_data, &start));
+    weight_sensor_thread.start(callback(weight_sensor_read_data, &start));
+
+    while (true)
+    {
+        printf("A;%d;%f\n", int((Kernel::Clock::now() - start).count()), Ain.read());
+        ThisThread::sleep_for(MAIN_SLEEP_TIME);
+    }
+}
+
+*/
+
+/*
+Dht11 sensor(PA_0);
+Thread thread1;
+
+void accelerometer_thread()
+{
+    while(true)
+    {
+        //led = !led;
+        //ThisThread::sleep_for(SLEEP_RATE);
+        sensor.read();
+        printf("T: %d, H: %d\n:", sensor.getCelsius(), sensor.getHumidity());
+        ThisThread::sleep_for(SLEEP_RATE);
+
+    }
+}
+*/
