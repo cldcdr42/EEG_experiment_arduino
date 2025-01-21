@@ -8,18 +8,11 @@
 #include "Dht11.h"
 
 /*
-
+Drivers:
 DC-Motor driver:
-Sparkfun_TB6612  library: http://os.mbed.com/users/ateyercheese/code/Sparkfun_TB6612/
-
 Accelerometer:
-ADXL45 library: http://os.mbed.com/users/aberk/code/ADXL345/
-
 Weight Scale ADC:
-HX711 library: http://os.mbed.com/users/megrootens/code/HX711/
-
-Temperature and Humidity sensor:
-DHT11 library (modified): https://os.mbed.com/users/fossum_13/code/DHT11/
+Temperature sensor
 */
 
 /* 
